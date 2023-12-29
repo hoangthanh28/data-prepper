@@ -1,0 +1,68 @@
+version: "3.7"
+services: 
+  data-generator:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    deploy:
+      replicas: 1
+    restart: on-failure
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_RESOURCE_ATTRIBUTES=service.name=data-generator
+    ports:
+      - 5000:80
+    depends_on:
+      - otel-collector
+    networks:
+      - test
+      
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib
+    container_name: otel-collector
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
+    ports:
+      - 4317:4317 # OTLP http receiver
+      - 4318:4318 # OTLP http receiver
+    depends_on:
+      - opensearch
+      - data-prepper
+    networks:
+      - test
+  opensearch: # This is also the hostname of the container within the Docker network (i.e. https://opensearch-node1/)
+    image: opensearchproject/opensearch:latest # Specifying the latest available image - modify if you want a specific version
+    container_name: opensearch
+    environment:
+      - plugins.query.datasources.encryption.masterkey=95238e6a6cb7c98a6cd34546
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true # Disable JVM heap memory swapping
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m" # Set min and max JVM heap sizes to at least 50% of system RAM
+    ulimits:
+      memlock:
+        soft: -1 # Set memlock to unlimited (no soft or hard limit)
+        hard: -1
+      nofile:
+        soft: 65536 # Maximum number of open files for the opensearch user - set to at least 65536
+        hard: 65536
+    ports:
+      - 9200:9200 # REST API
+      - 9600:9600 # Performance Analyzer
+    networks:
+      - test # All of the containers will join the same Docker bridge network
+  data-prepper:
+    image: opensearchproject/data-prepper:latest
+    container_name: data-prepper
+    ports:
+      - 21890:21890 
+      - 21891:21891 
+      - 21892:21892 
+    volumes:
+      - ./log_pipeline.yaml:/usr/share/data-prepper/pipelines/log_pipeline.yaml
+      - ./data-prepper-config.yaml:/usr/share/data-prepper/config/data-prepper-config.yaml
+    networks:
+      - test
+    depends_on:
+      - opensearch
+networks:
+  test:

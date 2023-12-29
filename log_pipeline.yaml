@@ -1,0 +1,41 @@
+log-pipeline:
+  source:
+    # http:
+    #   ssl: false
+      # ssl_certificate_file: "/full/path/to/certfile.crt"
+      # ssl_key_file: "/full/path/to/keyfile.key"
+      # authentication:
+      #   http_basic:
+      #     username: "myuser"
+      #     password: "mys3cret"
+    otel_logs_source:
+      ssl: false
+    # http:
+    #   ssl: false
+  buffer:
+    bounded_blocking:
+  # processor:
+  #   - aggregate:
+  #       identification_keys: ["attributes.ActionName", "log.attributes.ActionName"]
+  #       action:
+  #         remove_duplicates:
+  sink:
+    - opensearch:
+        hosts: [ "https://opensearch:9200" ]
+        # Change to your credentials
+        username: "admin"
+        password: "admin"
+        insecure: true
+        # Add a certificate file if you are accessing an OpenSearch cluster with a self-signed certificate  
+        #cert: /path/to/cert
+        # If you are connecting to an Amazon OpenSearch Service domain without
+        # Fine-Grained Access Control, enable these settings. Comment out the
+        # username and password above.
+        #aws_sigv4: true
+        #aws_region: us-east-1
+        # Since we are Grok matching for Apache logs, it makes sense to send them to an OpenSearch index named apache_logs.
+        # You should change this to correspond with how your OpenSearch indexes are set up.        
+        index_type: custom
+        index: otel-logs-%{yyyy.MM.dd}
+        bulk_size: 20
+    - stdout:
