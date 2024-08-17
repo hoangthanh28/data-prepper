@@ -34,7 +34,7 @@ public class DataStreamPartitionCheckpointTest {
     private DataStreamPartitionCheckpoint dataStreamPartitionCheckpoint;
 
     @Test
-    public void checkpoint() {
+    public void checkpoint_success() {
         final int recordNumber = new Random().nextInt();
         final String checkpointToken = UUID.randomUUID().toString();
         when(streamPartition.getProgressState()).thenReturn(Optional.of(streamProgressState));
@@ -46,10 +46,26 @@ public class DataStreamPartitionCheckpointTest {
     }
 
     @Test
-    public void updateStreamPartitionForAcknowledgmentWait() {
+    public void updateStreamPartitionForAcknowledgmentWait_success() {
         final int minutes = new Random().nextInt();
         final Duration duration = Duration.ofMinutes(minutes);
         dataStreamPartitionCheckpoint.updateStreamPartitionForAcknowledgmentWait(duration);
         verify(enhancedSourceCoordinator).saveProgressStateForPartition(streamPartition, duration);
+    }
+
+    @Test
+    public void resetCheckpoint_success() {
+        when(streamPartition.getProgressState()).thenReturn(Optional.of(streamProgressState));
+        dataStreamPartitionCheckpoint.resetCheckpoint();
+        verify(enhancedSourceCoordinator).giveUpPartition(streamPartition);
+        verify(streamProgressState).setResumeToken(null);
+        verify(streamProgressState).setLoadedRecords(0);
+        verify(streamProgressState).setLastUpdateTimestamp(anyLong());
+    }
+
+    @Test
+    public void extendLease_success() {
+        dataStreamPartitionCheckpoint.extendLease();
+        verify(enhancedSourceCoordinator).saveProgressStateForPartition(streamPartition, CHECKPOINT_OWNERSHIP_TIMEOUT_INCREASE);
     }
 }

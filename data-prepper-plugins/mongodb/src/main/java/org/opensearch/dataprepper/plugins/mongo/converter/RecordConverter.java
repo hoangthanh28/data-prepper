@@ -7,13 +7,11 @@ package org.opensearch.dataprepper.plugins.mongo.converter;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.mongodb.client.model.changestream.OperationType;
 import org.opensearch.dataprepper.model.document.JacksonDocument;
 import org.opensearch.dataprepper.model.event.Event;
 import org.opensearch.dataprepper.model.event.EventMetadata;
 import org.opensearch.dataprepper.model.opensearch.OpenSearchBulkActions;
-import org.opensearch.dataprepper.plugins.mongo.configuration.CollectionConfig;
-import org.opensearch.dataprepper.plugins.mongo.coordination.partition.ExportPartition;
-import org.opensearch.dataprepper.plugins.mongo.coordination.partition.StreamPartition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,11 +27,11 @@ public class RecordConverter {
     private static final String DEFAULT_ACTION = OpenSearchBulkActions.INDEX.toString();
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private final CollectionConfig collectionConfig;
+    private final String collection;
     private final String dataType;
 
-    public RecordConverter(final CollectionConfig collectionConfig, final String dataType) {
-        this.collectionConfig = collectionConfig;
+    public RecordConverter(final String collection, final String dataType) {
+        this.collection = collection;
         this.dataType = dataType;
     }
 
@@ -56,15 +54,16 @@ public class RecordConverter {
      * Convert the source data into a JacksonEvent.
      *
      * @param record                  record that will be converted to Event.
-     * @param eventCreationTimeMillis Creation timestamp of the event
+     * @param eventCreateTimeEpochMillis Creation timestamp of the event in epoch millis
      * @param eventVersionNumber      Event version number to handle conflicts
      * @param eventName               Event name
      * @return Jackson document event
      */
     public Event convert(final String record,
-                        final long eventCreationTimeMillis,
+                        final long eventCreateTimeEpochMillis,
                         final long eventVersionNumber,
-                        final String eventName) {
+                        final OperationType eventName,
+                        final String primaryKeyBsonType) {
         final Map<String, Object> data = convertToMap(record);
         final Event event = JacksonDocument.builder()
                 .withData(data)
@@ -72,27 +71,23 @@ public class RecordConverter {
 
         // Only set external origination time for stream events, not export
         if (eventName != null) {
-            final Instant externalOriginationTime = Instant.ofEpochMilli(eventCreationTimeMillis);
+            final Instant externalOriginationTime = Instant.ofEpochMilli(eventCreateTimeEpochMillis);
             event.getEventHandle().setExternalOriginationTime(externalOriginationTime);
             event.getMetadata().setExternalOriginationTime(externalOriginationTime);
         }
         final EventMetadata eventMetadata = event.getMetadata();
 
-        if (dataType.equals(ExportPartition.PARTITION_TYPE)) {
-            eventMetadata.setAttribute(MetadataKeyAttributes.INGESTION_EVENT_TYPE_ATTRIBUTE, ExportPartition.PARTITION_TYPE);
-        } else if (dataType.equals(StreamPartition.PARTITION_TYPE)) {
-            eventMetadata.setAttribute(MetadataKeyAttributes.INGESTION_EVENT_TYPE_ATTRIBUTE, StreamPartition.PARTITION_TYPE);
-        }
-
-        eventMetadata.setAttribute(MetadataKeyAttributes.MONGODB_EVENT_COLLECTION_METADATA_ATTRIBUTE, collectionConfig.getCollection());
-        eventMetadata.setAttribute(MetadataKeyAttributes.MONGODB_EVENT_TIMESTAMP_METADATA_ATTRIBUTE, eventCreationTimeMillis);
-        eventMetadata.setAttribute(MetadataKeyAttributes.MONGODB_STREAM_EVENT_NAME_METADATA_ATTRIBUTE, eventName);
+        eventMetadata.setAttribute(MetadataKeyAttributes.INGESTION_EVENT_TYPE_ATTRIBUTE, dataType);
+        eventMetadata.setAttribute(MetadataKeyAttributes.DOCUMENTDB_EVENT_COLLECTION_METADATA_ATTRIBUTE, collection);
+        eventMetadata.setAttribute(MetadataKeyAttributes.DOCUMENTDB_EVENT_TIMESTAMP_METADATA_ATTRIBUTE, eventCreateTimeEpochMillis);
+        eventMetadata.setAttribute(MetadataKeyAttributes.DOCUMENTDB_STREAM_EVENT_NAME_METADATA_ATTRIBUTE, eventName);
         eventMetadata.setAttribute(MetadataKeyAttributes.EVENT_NAME_BULK_ACTION_METADATA_ATTRIBUTE, mapStreamEventNameToBulkAction(eventName));
         eventMetadata.setAttribute(MetadataKeyAttributes.EVENT_VERSION_FROM_TIMESTAMP, eventVersionNumber);
 
-        final String partitionKey = getAttributeValue(data, MetadataKeyAttributes.MONGODB_PRIMARY_KEY_ATTRIBUTE_NAME);
+        final String partitionKey = getAttributeValue(data, MetadataKeyAttributes.DOCUMENTDB_PRIMARY_KEY_ATTRIBUTE_NAME);
         eventMetadata.setAttribute(MetadataKeyAttributes.PARTITION_KEY_METADATA_ATTRIBUTE, partitionKey);
         eventMetadata.setAttribute(MetadataKeyAttributes.PRIMARY_KEY_DOCUMENT_ID_METADATA_ATTRIBUTE, partitionKey);
+        eventMetadata.setAttribute(MetadataKeyAttributes.DOCUMENTDB_ID_TYPE_METADATA_ATTRIBUTE, primaryKeyBsonType);
 
         return event;
     }
@@ -107,21 +102,23 @@ public class RecordConverter {
      */
     public Event convert(final String record,
                         final long eventCreationTimeMillis,
-                        final long eventVersionNumber) {
-        return convert(record, eventCreationTimeMillis, eventVersionNumber, null);
+                        final long eventVersionNumber,
+                        final String primaryKeyBsonType) {
+        return convert(record, eventCreationTimeMillis, eventVersionNumber, null, primaryKeyBsonType);
     }
 
-    private String mapStreamEventNameToBulkAction(final String streamEventName) {
+    private String mapStreamEventNameToBulkAction(final OperationType streamEventName) {
         if (streamEventName == null) {
             return DEFAULT_ACTION;
         }
 
         // https://www.mongodb.com/docs/manual/reference/change-events/
         switch (streamEventName) {
-            case "INSERT":
-            case "MODIFY":
+            case INSERT:
+            case UPDATE:
+            case REPLACE:
                 return OpenSearchBulkActions.INDEX.toString();
-            case "REMOVE":
+            case DELETE:
                 return OpenSearchBulkActions.DELETE.toString();
             default:
                 return DEFAULT_ACTION;

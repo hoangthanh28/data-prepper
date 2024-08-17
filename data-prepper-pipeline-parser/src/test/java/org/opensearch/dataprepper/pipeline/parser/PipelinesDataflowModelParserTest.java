@@ -5,9 +5,17 @@
 
 package org.opensearch.dataprepper.pipeline.parser;
 
+import static org.hamcrest.CoreMatchers.equalTo;
+import static org.hamcrest.CoreMatchers.notNullValue;
+import static org.hamcrest.CoreMatchers.nullValue;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mock;
+import static org.mockito.Mockito.when;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.opensearch.dataprepper.model.configuration.DataPrepperVersion;
 import org.opensearch.dataprepper.model.configuration.PipelinesDataFlowModel;
@@ -21,13 +29,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-
-import static org.hamcrest.CoreMatchers.equalTo;
-import static org.hamcrest.CoreMatchers.notNullValue;
-import static org.hamcrest.CoreMatchers.nullValue;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class PipelinesDataflowModelParserTest {
@@ -85,10 +86,12 @@ class PipelinesDataflowModelParserTest {
                 equalTo(TestConfigurationProvider.VALID_MULTIPLE_PIPELINE_NAMES));
     }
 
-    @Test
-    void parseConfiguration_with_valid_pipelines_and_extensions() throws FileNotFoundException {
+    @ParameterizedTest
+    @ValueSource(strings = {TestConfigurationProvider.VALID_PIPELINE_CONFIG_FILE_WITH_DEPRECATED_EXTENSIONS,
+            TestConfigurationProvider.VALID_PIPELINE_CONFIG_FILE_WITH_EXTENSION})
+    void parseConfiguration_with_valid_pipelines_and_extension(final String filePath) throws FileNotFoundException {
         when(pipelineConfigurationReader.getPipelineConfigurationInputStreams())
-                .thenReturn(List.of(new FileInputStream(TestConfigurationProvider.VALID_PIPELINE_CONFIG_FILE_WITH_EXTENSIONS)));
+                .thenReturn(List.of(new FileInputStream(filePath)));
 
         final PipelinesDataflowModelParser pipelinesDataflowModelParser =
                 new PipelinesDataflowModelParser(pipelineConfigurationReader);
@@ -158,12 +161,34 @@ class PipelinesDataflowModelParserTest {
         final ParseException actualException = assertThrows(
                 ParseException.class, pipelinesDataflowModelParser::parseConfiguration);
         assertThat(actualException.getMessage(), equalTo(
-                "pipeline_configurations and definition must all be defined in a single YAML file " +
-                        "if pipeline_configurations is configured."));
+                "extension/pipeline_configurations and definition must all be defined in a single YAML file " +
+                        "if extension/pipeline_configurations is configured."));
     }
 
     @Test
     void parseConfiguration_from_directory_with_single_file_creates_the_correct_model() {
+        final File directoryLocation = new File(TestConfigurationProvider.SINGLE_FILE_PIPELINE_DIRECTOTRY);
+        final List<InputStream> fileInputStreams = Stream.of(directoryLocation.listFiles())
+                .map(file -> {
+                    try {
+                        return new FileInputStream(file);
+                    } catch (FileNotFoundException e) {
+                        throw new RuntimeException(e);
+                    }
+                })
+                .collect(Collectors.toList());
+
+        when(pipelineConfigurationReader.getPipelineConfigurationInputStreams()).thenReturn(fileInputStreams);
+
+        final PipelinesDataflowModelParser pipelinesDataflowModelParser =
+                new PipelinesDataflowModelParser(pipelineConfigurationReader);
+        final PipelinesDataFlowModel actualPipelinesDataFlowModel = pipelinesDataflowModelParser.parseConfiguration();
+        assertThat(actualPipelinesDataFlowModel.getPipelines().keySet(),
+                equalTo(TestConfigurationProvider.VALID_MULTIPLE_PIPELINE_NAMES));
+    }
+
+    @Test
+    void parseConfiguration_check_successful_transformation() {
         final File directoryLocation = new File(TestConfigurationProvider.SINGLE_FILE_PIPELINE_DIRECTOTRY);
         final List<InputStream> fileInputStreams = Stream.of(directoryLocation.listFiles())
                 .map(file -> {

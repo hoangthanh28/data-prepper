@@ -6,13 +6,17 @@
 package org.opensearch.dataprepper.plugins.sink.s3.accumulator;
 
 import org.apache.commons.lang3.time.StopWatch;
-import software.amazon.awssdk.core.sync.RequestBody;
-import software.amazon.awssdk.services.s3.S3Client;
-import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import org.opensearch.dataprepper.plugins.sink.s3.ownership.BucketOwnerProvider;
+import software.amazon.awssdk.core.async.AsyncRequestBody;
+import software.amazon.awssdk.services.s3.S3AsyncClient;
+
 import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.time.Duration;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -20,18 +24,26 @@ import java.util.function.Supplier;
  */
 public class InMemoryBuffer implements Buffer {
 
-    private static final ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
-    private static final ByteArrayPositionOutputStream byteArrayPositionOutputStream = new ByteArrayPositionOutputStream(byteArrayOutputStream);
-    private final S3Client s3Client;
+    private final ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+    private final ByteArrayPositionOutputStream byteArrayPositionOutputStream = new ByteArrayPositionOutputStream(byteArrayOutputStream);
+    private final S3AsyncClient s3Client;
     private final Supplier<String> bucketSupplier;
     private final Supplier<String> keySupplier;
+
+    private final BucketOwnerProvider bucketOwnerProvider;
     private int eventCount;
     private final StopWatch watch;
     private boolean isCodecStarted;
     private String bucket;
     private String key;
 
-    InMemoryBuffer(S3Client s3Client, Supplier<String> bucketSupplier, Supplier<String> keySupplier) {
+    private String defaultBucket;
+
+    InMemoryBuffer(final S3AsyncClient s3Client,
+                   final Supplier<String> bucketSupplier,
+                   final Supplier<String> keySupplier,
+                   final String defaultBucket,
+                   final BucketOwnerProvider bucketOwnerProvider) {
         this.s3Client = s3Client;
         this.bucketSupplier = bucketSupplier;
         this.keySupplier = keySupplier;
@@ -40,6 +52,8 @@ public class InMemoryBuffer implements Buffer {
         watch = new StopWatch();
         watch.start();
         isCodecStarted = false;
+        this.defaultBucket = defaultBucket;
+        this.bucketOwnerProvider = bucketOwnerProvider;
     }
 
     @Override
@@ -60,11 +74,11 @@ public class InMemoryBuffer implements Buffer {
      * Upload accumulated data to s3 bucket.
      */
     @Override
-    public void flushToS3() {
+    public Optional<CompletableFuture<?>> flushToS3(final Consumer<Boolean> consumeOnCompletion, final Consumer<Throwable> consumeOnException) {
         final byte[] byteArray = byteArrayOutputStream.toByteArray();
-        s3Client.putObject(
-                PutObjectRequest.builder().bucket(getBucket()).key(getKey()).build(),
-                RequestBody.fromBytes(byteArray));
+        return Optional.ofNullable(BufferUtilities.putObjectOrSendToDefaultBucket(s3Client, AsyncRequestBody.fromBytes(byteArray),
+                consumeOnCompletion, consumeOnException,
+                getKey(), getBucket(), defaultBucket, bucketOwnerProvider));
     }
 
     private String getBucket() {

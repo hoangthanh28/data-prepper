@@ -32,6 +32,7 @@ import org.opensearch.dataprepper.plugins.kafka.consumer.KafkaCustomConsumer;
 import org.opensearch.dataprepper.plugins.kafka.consumer.KafkaCustomConsumerFactory;
 import org.opensearch.dataprepper.plugins.kafka.producer.KafkaCustomProducer;
 import org.opensearch.dataprepper.plugins.kafka.producer.KafkaCustomProducerFactory;
+import org.opensearch.dataprepper.plugins.kafka.configuration.KafkaProducerProperties;
 import org.opensearch.dataprepper.plugins.kafka.service.TopicServiceFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,6 +42,7 @@ import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -88,6 +90,16 @@ public class KafkaBuffer extends AbstractBuffer<Record<Event>> {
         consumers.forEach(this.executorService::submit);
 
         this.drainTimeout = kafkaBufferConfig.getDrainTimeout();
+    }
+
+    @Override
+    public Optional<Integer> getMaxRequestSize() {
+        return Optional.of(producer.getMaxRequestSize());
+    }
+
+    @Override
+    public Optional<Integer> getOptimalRequestSize() {
+        return Optional.of(KafkaProducerProperties.DEFAULT_MAX_REQUEST_SIZE);
     }
 
     @Override

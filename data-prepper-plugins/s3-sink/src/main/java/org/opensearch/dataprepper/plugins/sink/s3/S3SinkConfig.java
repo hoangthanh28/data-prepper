@@ -10,12 +10,16 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
+import org.opensearch.dataprepper.aws.validator.AwsAccountId;
 import org.opensearch.dataprepper.model.configuration.PluginModel;
 import org.opensearch.dataprepper.plugins.sink.s3.accumulator.BufferTypeOptions;
 import org.opensearch.dataprepper.plugins.sink.s3.compression.CompressionOption;
+import org.opensearch.dataprepper.plugins.sink.s3.configuration.AggregateThresholdOptions;
 import org.opensearch.dataprepper.plugins.sink.s3.configuration.AwsAuthenticationOptions;
 import org.opensearch.dataprepper.plugins.sink.s3.configuration.ObjectKeyOptions;
 import org.opensearch.dataprepper.plugins.sink.s3.configuration.ThresholdOptions;
+
+import java.util.Map;
 
 /**
  * s3 sink configuration class contains properties, used to read yaml configuration.
@@ -36,15 +40,30 @@ public class S3SinkConfig {
     @Size(min = 3, max = 500, message = "bucket length should be at least 3 characters")
     private String bucketName;
 
+    /**
+     * The default bucket to send to if using a dynamic bucket name and failures occur
+     * for any reason when sending to a dynamic bucket
+     */
+    @JsonProperty("default_bucket")
+    @Size(min = 3, max = 500, message = "default_bucket length should be at least 3 characters")
+    private String defaultBucket;
+
+
     @JsonProperty("object_key")
-    private ObjectKeyOptions objectKeyOptions;
+    @Valid
+    private ObjectKeyOptions objectKeyOptions = new ObjectKeyOptions();
 
     @JsonProperty("compression")
     private CompressionOption compression = CompressionOption.NONE;
 
     @JsonProperty("threshold")
     @NotNull
+    @Valid
     private ThresholdOptions thresholdOptions;
+
+    @JsonProperty("aggregate_threshold")
+    @Valid
+    private AggregateThresholdOptions aggregateThresholdOptions;
 
     @JsonProperty("codec")
     @NotNull
@@ -58,6 +77,13 @@ public class S3SinkConfig {
     @JsonProperty("max_retries")
     private int maxUploadRetries = DEFAULT_UPLOAD_RETRIES;
 
+    @JsonProperty("bucket_owners")
+    private Map<String, @AwsAccountId String> bucketOwners;
+
+    @JsonProperty("default_bucket_owner")
+    @AwsAccountId
+    private String defaultBucketOwner;
+
     /**
      * Aws Authentication configuration Options.
      * @return aws authentication options.
@@ -67,12 +93,17 @@ public class S3SinkConfig {
     }
 
     /**
-     * Threshold configuration Options.
+     * Threshold configuration Options at the individual S3 group level
      * @return threshold option object.
      */
     public ThresholdOptions getThresholdOptions() {
         return thresholdOptions;
     }
+
+    /**
+     * Threshold configuration for the aggregation of all S3 groups
+     */
+    public AggregateThresholdOptions getAggregateThresholdOptions() { return aggregateThresholdOptions; }
 
     /**
      * Read s3 bucket name configuration.
@@ -130,5 +161,15 @@ public class S3SinkConfig {
 
     public CompressionOption getCompression() {
         return compression;
+    }
+
+    public String getDefaultBucket() { return defaultBucket; }
+
+    public Map<String, String> getBucketOwners() {
+        return bucketOwners;
+    }
+
+    public String getDefaultBucketOwner() {
+        return defaultBucketOwner;
     }
 }

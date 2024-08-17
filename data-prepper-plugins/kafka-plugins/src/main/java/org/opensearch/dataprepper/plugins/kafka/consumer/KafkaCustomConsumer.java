@@ -17,6 +17,8 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.common.header.Header;
+import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.errors.RecordDeserializationException;
@@ -426,8 +428,20 @@ public class KafkaCustomConsumer implements Runnable, ConsumerRebalanceListener 
         if (kafkaKeyMode == KafkaKeyMode.INCLUDE_AS_METADATA) {
             eventMetadata.setAttribute("kafka_key", key);
         }
+        Headers headers = consumerRecord.headers();
+        if (headers != null) {
+            Map<String, byte[]> headerData = new HashMap<>();
+            for (Header header: headers) {
+                headerData.put(header.key(), header.value());
+            }
+            eventMetadata.setAttribute("kafka_headers", headerData);
+        }
+        eventMetadata.setAttribute("kafka_timestamp", consumerRecord.timestamp());
+        eventMetadata.setAttribute("kafka_timestamp_type", consumerRecord.timestampType().toString());
         eventMetadata.setAttribute("kafka_topic", topicName);
         eventMetadata.setAttribute("kafka_partition", String.valueOf(partition));
+        eventMetadata.setExternalOriginationTime(Instant.ofEpochMilli(consumerRecord.timestamp()));
+        event.getEventHandle().setExternalOriginationTime(Instant.ofEpochMilli(consumerRecord.timestamp()));
 
         return new Record<Event>(event);
     }

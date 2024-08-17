@@ -1,27 +1,49 @@
 package org.opensearch.dataprepper.plugins.mongo.configuration;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 
 import java.util.Arrays;
-import java.util.Map;
 import java.util.stream.Collectors;
 
 public class CollectionConfig {
     private static final String COLLECTION_SPLITTER = "\\.";
+    private static final int DEFAULT_STREAM_BATCH_SIZE = 1000;
+    private static final int DEFAULT_PARTITION_COUNT = 100;
+    private static final int DEFAULT_EXPORT_BATCH_SIZE = 10_000;
     @JsonProperty("collection")
+    @Pattern(regexp = ".+?\\..+", message = "Should be of pattern <database>.<collection>")
     private @NotNull String collection;
 
-    @JsonProperty("export_config")
-    private ExportConfig exportConfig;
+    @JsonProperty("export")
+    private boolean export;
 
-    @JsonProperty("ingestion_mode")
-    private IngestionMode ingestionMode;
+    @JsonProperty("stream")
+    private boolean stream;
+
+    @JsonProperty("partition_count")
+    @Min(1)
+    @Max(1000)
+    private int partitionCount;
+
+    @JsonProperty("export_batch_size")
+    @Min(1)
+    @Max(1_000_000)
+    private int exportBatchSize;
+    @JsonProperty("stream_batch_size")
+    @Min(1)
+    @Max(1_000_000)
+    private int streamBatchSize;
 
     public CollectionConfig() {
-        this.ingestionMode = IngestionMode.EXPORT_STREAM;
-        this.exportConfig = new ExportConfig();
+        this.export = true;
+        this.stream = true;
+        this.streamBatchSize = DEFAULT_STREAM_BATCH_SIZE;
+        this.partitionCount = DEFAULT_PARTITION_COUNT;
+        this.exportBatchSize = DEFAULT_EXPORT_BATCH_SIZE;
     }
 
     public String getCollection() {
@@ -36,43 +58,23 @@ public class CollectionConfig {
         return Arrays.stream(collection.split(COLLECTION_SPLITTER)).collect(Collectors.toList()).get(1);
     }
 
-    public IngestionMode getIngestionMode() {
-        return this.ingestionMode;
+    public boolean isExport() {
+        return this.export;
     }
 
-    public ExportConfig getExportConfig() {
-        return this.exportConfig;
+    public boolean isStream() {
+        return this.stream;
     }
 
-    public static class ExportConfig {
-        private static final int DEFAULT_ITEMS_PER_PARTITION = 4000;
-        @JsonProperty("items_per_partition")
-        private Integer itemsPerPartition;
-
-        public ExportConfig() {
-            this.itemsPerPartition = DEFAULT_ITEMS_PER_PARTITION;
-        }
-
-        public Integer getItemsPerPartition() {
-            return this.itemsPerPartition;
-        }
+    public int getPartitionCount() {
+        return this.partitionCount;
     }
 
-    public enum IngestionMode {
-        EXPORT_STREAM("export_stream"),
-        EXPORT("export"),
-        STREAM("stream");
+    public int getExportBatchSize() {
+        return this.exportBatchSize;
+    }
 
-        private static final Map<String, IngestionMode> OPTIONS_MAP = Arrays.stream(values()).collect(Collectors.toMap((value) -> value.type, (value) -> value));
-        private final String type;
-
-        IngestionMode(String type) {
-            this.type = type;
-        }
-
-        @JsonCreator
-        public static IngestionMode fromTypeValue(String type) {
-            return OPTIONS_MAP.get(type.toLowerCase());
-        }
+    public int getStreamBatchSize() {
+        return this.streamBatchSize;
     }
 }

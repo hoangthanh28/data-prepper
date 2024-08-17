@@ -15,20 +15,21 @@ import org.opensearch.dataprepper.model.event.Event;
 import org.opensearch.dataprepper.model.record.Record;
 import org.opensearch.dataprepper.model.source.coordinator.enhanced.EnhancedSourceCoordinator;
 import org.opensearch.dataprepper.model.source.coordinator.enhanced.EnhancedSourcePartition;
-import org.opensearch.dataprepper.plugins.mongo.buffer.ExportRecordBufferWriter;
 import org.opensearch.dataprepper.plugins.mongo.buffer.RecordBufferWriter;
-import org.opensearch.dataprepper.plugins.mongo.converter.RecordConverter;
+import org.opensearch.dataprepper.plugins.mongo.converter.PartitionKeyRecordConverter;
 import org.opensearch.dataprepper.plugins.mongo.coordination.partition.DataQueryPartition;
 import org.opensearch.dataprepper.plugins.mongo.coordination.partition.ExportPartition;
 import org.opensearch.dataprepper.plugins.mongo.coordination.partition.GlobalState;
 import org.opensearch.dataprepper.plugins.mongo.configuration.MongoDBSourceConfig;
 import org.opensearch.dataprepper.plugins.mongo.model.ExportLoadStatus;
 import org.opensearch.dataprepper.plugins.mongo.model.StreamLoadStatus;
+import org.opensearch.dataprepper.plugins.mongo.utils.DocumentDBSourceAggregateMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -36,6 +37,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static org.opensearch.dataprepper.plugins.mongo.export.ExportScheduler.EXPORT_PREFIX;
 import static org.opensearch.dataprepper.plugins.mongo.stream.StreamWorker.STREAM_PREFIX;
 
@@ -75,23 +77,27 @@ public class ExportWorker implements Runnable {
     private final EnhancedSourceCoordinator sourceCoordinator;
     private final ExecutorService executor;
     private final PluginMetrics pluginMetrics;
-
+    private final String s3PathPrefix;
+    private final DocumentDBSourceAggregateMetrics documentDBAggregateMetrics;
 
     public ExportWorker(final EnhancedSourceCoordinator sourceCoordinator,
                         final Buffer<Record<Event>> buffer,
                         final PluginMetrics pluginMetrics,
                         final AcknowledgementSetManager acknowledgementSetManager,
-                        final MongoDBSourceConfig sourceConfig) {
+                        final MongoDBSourceConfig sourceConfig,
+                        final String s3PathPrefix,
+                        final DocumentDBSourceAggregateMetrics documentDBAggregateMetrics) {
         this.sourceCoordinator = sourceCoordinator;
         executor = Executors.newFixedThreadPool(MAX_JOB_COUNT);
         final BufferAccumulator<Record<Event>> bufferAccumulator = BufferAccumulator.create(buffer, DEFAULT_BUFFER_BATCH_SIZE, BUFFER_TIMEOUT);
-        final RecordConverter recordConverter = new RecordConverter(sourceConfig.getCollections().get(0), ExportPartition.PARTITION_TYPE);
-        recordBufferWriter = ExportRecordBufferWriter.create(bufferAccumulator, sourceConfig.getCollections().get(0),
-                recordConverter, pluginMetrics, Instant.now().toEpochMilli());
+        recordBufferWriter = RecordBufferWriter.create(bufferAccumulator, pluginMetrics);
         this.acknowledgementSetManager = acknowledgementSetManager;
         this.sourceConfig = sourceConfig;
         this.startLine = 0;// replace it with checkpoint line
         this.pluginMetrics = pluginMetrics;
+        checkArgument(Objects.nonNull(s3PathPrefix), "S3 path prefix must not be null");
+        this.s3PathPrefix = s3PathPrefix;
+        this.documentDBAggregateMetrics = documentDBAggregateMetrics;
         this.successPartitionCounter = pluginMetrics.counter(SUCCESS_PARTITION_COUNTER_NAME);
         this.failureParitionCounter = pluginMetrics.counter(FAILURE_PARTITION_COUNTER_NAME);
         this.activeExportPartitionConsumerGauge = pluginMetrics.gauge(ACTIVE_EXPORT_PARTITION_CONSUMERS_GAUGE, numOfWorkers);
@@ -110,9 +116,12 @@ public class ExportWorker implements Runnable {
                     if (sourcePartition.isPresent()) {
                         dataQueryPartition = (DataQueryPartition) sourcePartition.get();
                         final AcknowledgementSet acknowledgementSet = createAcknowledgementSet(dataQueryPartition).orElse(null);
+                        final String s3Prefix = s3PathPrefix + dataQueryPartition.getCollection();
                         final DataQueryPartitionCheckpoint partitionCheckpoint =  new DataQueryPartitionCheckpoint(sourceCoordinator, dataQueryPartition);
-                        final ExportPartitionWorker exportPartitionWorker = new ExportPartitionWorker(recordBufferWriter, 
-                                dataQueryPartition, acknowledgementSet, sourceConfig, partitionCheckpoint, pluginMetrics);
+                        final PartitionKeyRecordConverter recordConverter = new PartitionKeyRecordConverter(dataQueryPartition.getCollection(),
+                                ExportPartition.PARTITION_TYPE, s3Prefix);
+                        final ExportPartitionWorker exportPartitionWorker = new ExportPartitionWorker(recordBufferWriter, recordConverter,
+                                dataQueryPartition, acknowledgementSet, sourceConfig, partitionCheckpoint, Instant.now().toEpochMilli(), pluginMetrics, documentDBAggregateMetrics);
                         final CompletableFuture<Void> runLoader = CompletableFuture.runAsync(exportPartitionWorker, executor);
                         runLoader.whenComplete(completePartitionLoader(dataQueryPartition));
                         numOfWorkers.incrementAndGet();
@@ -127,7 +136,10 @@ public class ExportWorker implements Runnable {
                 }
             } catch (final Exception e) {
                 LOG.error("Received an exception while processing an export data partition, backing off and retrying", e);
-                sourceCoordinator.giveUpPartition(dataQueryPartition);
+                if (dataQueryPartition != null) {
+                    sourceCoordinator.giveUpPartition(dataQueryPartition);
+                }
+
                 try {
                     Thread.sleep(DEFAULT_LEASE_INTERVAL_MILLIS);
                 } catch (final InterruptedException ex) {
@@ -221,7 +233,8 @@ public class ExportWorker implements Runnable {
             Optional<EnhancedSourcePartition> globalPartition = sourceCoordinator.getPartition(exportPartitionKey);
             if (globalPartition.isEmpty()) {
                 LOG.error("Failed to get load status for " + exportPartitionKey);
-                return;
+                // TODO add wait time
+                continue;
             }
 
             final GlobalState globalState = (GlobalState) globalPartition.get();
@@ -236,7 +249,8 @@ public class ExportWorker implements Runnable {
             try {
                 sourceCoordinator.saveProgressStateForPartition(globalState, null);
                 // if all load are completed.
-                if (exportLoadStatus.getLoadedPartitions() == exportLoadStatus.getTotalPartitions()) {
+                if (exportLoadStatus.isTotalParitionsComplete() &&
+                        exportLoadStatus.getLoadedPartitions() == exportLoadStatus.getTotalPartitions()) {
                     LOG.info("All Exports are done, streaming can continue...");
                     final StreamLoadStatus streamLoadStatus = new StreamLoadStatus(Instant.now().toEpochMilli());
                     sourceCoordinator.createPartition(new GlobalState(STREAM_PREFIX + collection, streamLoadStatus.toMap()));

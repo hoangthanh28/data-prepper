@@ -7,7 +7,8 @@ package org.opensearch.dataprepper.plugins.sink.s3.accumulator;
 
 import org.opensearch.dataprepper.model.codec.OutputCodec;
 import org.opensearch.dataprepper.plugins.sink.s3.compression.CompressionEngine;
-import software.amazon.awssdk.services.s3.S3Client;
+import org.opensearch.dataprepper.plugins.sink.s3.ownership.BucketOwnerProvider;
+import software.amazon.awssdk.services.s3.S3AsyncClient;
 
 import java.util.Objects;
 import java.util.function.Supplier;
@@ -17,15 +18,21 @@ public class CompressionBufferFactory implements BufferFactory {
     private final CompressionEngine compressionEngine;
     private final boolean compressionInternal;
 
-    public CompressionBufferFactory(final BufferFactory innerBufferFactory, final CompressionEngine compressionEngine, final OutputCodec codec) {
+    public CompressionBufferFactory(final BufferFactory innerBufferFactory,
+                                    final CompressionEngine compressionEngine,
+                                    final OutputCodec codec) {
         this.innerBufferFactory = Objects.requireNonNull(innerBufferFactory);
         this.compressionEngine = Objects.requireNonNull(compressionEngine);
         compressionInternal = Objects.requireNonNull(codec).isCompressionInternal();
     }
 
     @Override
-    public Buffer getBuffer(S3Client s3Client, Supplier<String> bucketSupplier, Supplier<String> keySupplier) {
-        final Buffer internalBuffer = innerBufferFactory.getBuffer(s3Client, bucketSupplier, keySupplier);
+    public Buffer getBuffer(final S3AsyncClient s3Client,
+                            final Supplier<String> bucketSupplier,
+                            final Supplier<String> keySupplier,
+                            final String defaultBucket,
+                            final BucketOwnerProvider bucketOwnerProvider) {
+        final Buffer internalBuffer = innerBufferFactory.getBuffer(s3Client, bucketSupplier, keySupplier, defaultBucket, bucketOwnerProvider);
         if(compressionInternal)
             return internalBuffer;
 

@@ -30,7 +30,7 @@ public class OpenSearchClientRefresher implements PluginComponentRefresher<OpenS
                                      final Function<ConnectionConfiguration, OpenSearchClient> clientFunction) {
         this.clientFunction = clientFunction;
         this.currentConfig = connectionConfiguration;
-        this.currentClient = clientFunction.apply(connectionConfiguration);
+        this.currentClient = null;
         credentialsChangeCounter = pluginMetrics.counter(CREDENTIALS_CHANGED);
         clientRefreshErrorsCounter = pluginMetrics.counter(CLIENT_REFRESH_ERRORS);
     }
@@ -44,6 +44,9 @@ public class OpenSearchClientRefresher implements PluginComponentRefresher<OpenS
     public OpenSearchClient get() {
         readWriteLock.readLock().lock();
         try {
+            if (currentClient == null) {
+                currentClient = clientFunction.apply(currentConfig);
+            }
             return currentClient;
         } finally {
             readWriteLock.readLock().unlock();
@@ -69,7 +72,27 @@ public class OpenSearchClientRefresher implements PluginComponentRefresher<OpenS
     }
 
     private boolean basicAuthChanged(final ConnectionConfiguration newConfig) {
-        return !Objects.equals(currentConfig.getUsername(), newConfig.getUsername()) ||
-                !Objects.equals(currentConfig.getPassword(), newConfig.getPassword());
+        final String existingUsername;
+        final String existingPassword;
+        if (currentConfig.getAuthConfig() != null) {
+            existingUsername = currentConfig.getAuthConfig().getUsername();
+            existingPassword = currentConfig.getAuthConfig().getPassword();
+        } else {
+            existingUsername = currentConfig.getUsername();
+            existingPassword = currentConfig.getPassword();
+        }
+
+        final String newUsername;
+        final String newPassword;
+        if (newConfig.getAuthConfig() != null) {
+            newUsername = newConfig.getAuthConfig().getUsername();
+            newPassword = newConfig.getAuthConfig().getPassword();
+        } else {
+            newUsername = newConfig.getUsername();
+            newPassword = newConfig.getPassword();
+        }
+
+        return !Objects.equals(existingUsername, newUsername) ||
+                !Objects.equals(existingPassword, newPassword);
     }
 }

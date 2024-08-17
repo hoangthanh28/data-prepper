@@ -11,6 +11,7 @@ import org.opensearch.dataprepper.plugins.mongo.coordination.partition.GlobalSta
 import org.opensearch.dataprepper.plugins.mongo.coordination.partition.StreamPartition;
 import org.opensearch.dataprepper.plugins.mongo.coordination.state.StreamProgressState;
 import org.opensearch.dataprepper.plugins.mongo.model.StreamLoadStatus;
+import org.opensearch.dataprepper.plugins.mongo.s3partition.S3FolderPartitionCoordinator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -18,13 +19,14 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 
+import static org.opensearch.dataprepper.model.source.s3.S3ScanEnvironmentVariables.STOP_S3_SCAN_PROCESSING_PROPERTY;
 import static org.opensearch.dataprepper.plugins.mongo.stream.StreamWorker.STREAM_PREFIX;
 
 /**
  * A helper class to handle the data query partition status and the progress state
  * It will use coordinator APIs under the hood.
  */
-public class DataStreamPartitionCheckpoint {
+public class DataStreamPartitionCheckpoint extends S3FolderPartitionCoordinator {
     private static final Logger LOG = LoggerFactory.getLogger(DataStreamPartitionCheckpoint.class);
 
     static final Duration CHECKPOINT_OWNERSHIP_TIMEOUT_INCREASE = Duration.ofMinutes(5);
@@ -37,6 +39,7 @@ public class DataStreamPartitionCheckpoint {
 
     public DataStreamPartitionCheckpoint(final EnhancedSourceCoordinator enhancedSourceCoordinator,
                                          final StreamPartition streamPartition) {
+        super(enhancedSourceCoordinator);
         this.enhancedSourceCoordinator = enhancedSourceCoordinator;
         this.streamPartition = streamPartition;
     }
@@ -50,17 +53,34 @@ public class DataStreamPartitionCheckpoint {
     }
 
     /**
-     * This method is to do a checkpoint with latest sequence number processed.
-     * Note that this should be called on a regular basis even there are no changes to sequence number
+     * This method is to do a checkpoint with latest resume token processed.
+     * Note that this should be called on a regular basis even there are no changes to resume token
      * As the checkpoint will also extend the timeout for the lease
      *
-     * @param resumeToken
-     * @param recordNumber The last record number
+     * @param resumeToken checkpoint token to start resuming the stream when MongoDB/DocumentDB cursor is open
+     * @param recordCount The last processed record count
      */
-    public void checkpoint(final String resumeToken, final long recordNumber) {
-        LOG.debug("Checkpoint stream partition for collection " + streamPartition.getCollection() + " with record number " + recordNumber);
-        setProgressState(resumeToken, recordNumber);
+    public void checkpoint(final String resumeToken, final long recordCount) {
+        LOG.debug("Checkpoint stream partition for collection {} with record number {}", streamPartition.getCollection(), recordCount);
+        setProgressState(resumeToken, recordCount);
         enhancedSourceCoordinator.saveProgressStateForPartition(streamPartition, CHECKPOINT_OWNERSHIP_TIMEOUT_INCREASE);
+    }
+
+    public void extendLease() {
+        LOG.debug("Extending lease of stream partition for collection {}", streamPartition.getCollection());
+        enhancedSourceCoordinator.saveProgressStateForPartition(streamPartition, CHECKPOINT_OWNERSHIP_TIMEOUT_INCREASE);
+    }
+
+    /**
+     * This method is to reset checkpoint when change stream is invalid. The current thread will give up partition and new thread
+     * will take ownership of partition. If change stream is valid then new thread proceeds with processing change stream else the
+     * process repeats.
+     */
+    public void resetCheckpoint() {
+        LOG.debug("Resetting checkpoint stream partition for collection {}", streamPartition.getCollection());
+        setProgressState(null, 0);
+        enhancedSourceCoordinator.giveUpPartition(streamPartition);
+        System.clearProperty(STOP_S3_SCAN_PROCESSING_PROPERTY);
     }
 
     public Optional<StreamLoadStatus> getGlobalStreamLoadStatus() {
@@ -75,5 +95,10 @@ public class DataStreamPartitionCheckpoint {
 
     public void updateStreamPartitionForAcknowledgmentWait(final Duration acknowledgmentSetTimeout) {
         enhancedSourceCoordinator.saveProgressStateForPartition(streamPartition, acknowledgmentSetTimeout);
+    }
+
+    public void giveUpPartition() {
+        enhancedSourceCoordinator.giveUpPartition(streamPartition);
+        System.clearProperty(STOP_S3_SCAN_PROCESSING_PROPERTY);
     }
 }

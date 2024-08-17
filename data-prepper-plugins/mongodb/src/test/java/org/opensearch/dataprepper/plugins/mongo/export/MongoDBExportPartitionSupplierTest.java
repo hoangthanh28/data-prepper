@@ -5,11 +5,13 @@
 
 package org.opensearch.dataprepper.plugins.mongo.export;
 
+import com.mongodb.MongoClientException;
 import com.mongodb.client.FindIterable;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoCursor;
 import com.mongodb.client.MongoDatabase;
+import io.micrometer.core.instrument.Counter;
 import org.bson.Document;
 import org.bson.conversions.Bson;
 import org.junit.jupiter.api.BeforeEach;
@@ -19,15 +21,19 @@ import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.opensearch.dataprepper.model.source.coordinator.PartitionIdentifier;
+import org.opensearch.dataprepper.model.source.coordinator.enhanced.EnhancedSourceCoordinator;
 import org.opensearch.dataprepper.plugins.mongo.client.MongoDBConnection;
 import org.opensearch.dataprepper.plugins.mongo.configuration.CollectionConfig;
 import org.opensearch.dataprepper.plugins.mongo.configuration.MongoDBSourceConfig;
 import org.opensearch.dataprepper.plugins.mongo.coordination.partition.ExportPartition;
+import org.opensearch.dataprepper.plugins.mongo.model.PartitionIdentifierBatch;
+import org.opensearch.dataprepper.plugins.mongo.utils.DocumentDBSourceAggregateMetrics;
 
 import java.util.Collections;
 import java.util.List;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -37,6 +43,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -48,10 +55,25 @@ public class MongoDBExportPartitionSupplierTest {
     private MongoDBSourceConfig mongoDBConfig;
 
     @Mock
+    private EnhancedSourceCoordinator sourceCoordinator;
+
+    @Mock
+    private DocumentDBSourceAggregateMetrics documentDBSourceAggregateMetrics;
+
+    @Mock
     private CollectionConfig collectionConfig;
 
     @Mock
     private ExportPartition exportPartition;
+
+    @Mock
+    private Counter exportApiInvocations;
+    @Mock
+    private Counter exportPartitionQueryCount;
+    @Mock
+    private Counter export4xxErrors;
+    @Mock
+    private Counter export5xxErrors;
 
     private MongoDBExportPartitionSupplier testSupplier;
 
@@ -60,7 +82,11 @@ public class MongoDBExportPartitionSupplierTest {
         when(exportPartition.getCollection()).thenReturn(TEST_COLLECTION_NAME);
         lenient().when(collectionConfig.getCollectionName()).thenReturn(TEST_COLLECTION_NAME);
         lenient().when(mongoDBConfig.getCollections()).thenReturn(Collections.singletonList(collectionConfig));
-        testSupplier = new MongoDBExportPartitionSupplier(mongoDBConfig);
+        when(documentDBSourceAggregateMetrics.getExportApiInvocations()).thenReturn(exportApiInvocations);
+        lenient().when(documentDBSourceAggregateMetrics.getExportPartitionQueryCount()).thenReturn(exportPartitionQueryCount);
+        lenient().when(documentDBSourceAggregateMetrics.getExport4xxErrors()).thenReturn(export4xxErrors);
+        lenient().when(documentDBSourceAggregateMetrics.getExport5xxErrors()).thenReturn(export5xxErrors);
+        testSupplier = new MongoDBExportPartitionSupplier(mongoDBConfig, sourceCoordinator, documentDBSourceAggregateMetrics);
     }
 
     @Test
@@ -93,15 +119,22 @@ public class MongoDBExportPartitionSupplierTest {
                     .thenReturn(null)
                     .thenReturn(new Document("_id", "4999"));
             // When Apply Partition create logics
-            List<PartitionIdentifier> partitions = testSupplier.apply(exportPartition);
+            final PartitionIdentifierBatch partitionIdentifierBatch = testSupplier.apply(exportPartition);
+            assertThat(partitionIdentifierBatch.isLastBatch(), is(true));
+            assertThat(partitionIdentifierBatch.getEndDocId(), equalTo("4999"));
+            List<PartitionIdentifier> partitions = partitionIdentifierBatch.getPartitionIdentifiers();
             // Then dependencies are called
             verify(mongoClient).getDatabase(eq("test"));
             verify(mongoClient, times(1)).close();
             verify(mongoDatabase).getCollection(eq("collection"));
+            verify(exportApiInvocations).increment();
+            verify(exportPartitionQueryCount, times(2)).increment();
+            verify(export4xxErrors, never()).increment();
+            verify(export5xxErrors, never()).increment();
             // And partitions are created
             assertThat(partitions.size(), is(2));
-            assertThat(partitions.get(0).getPartitionKey(), is("test.collection|0|3999|java.lang.String"));
-            assertThat(partitions.get(1).getPartitionKey(), is("test.collection|4000|4999|java.lang.String"));
+            assertThat(partitions.get(0).getPartitionKey(), is("test.collection|0|3999|java.lang.String|java.lang.String"));
+            assertThat(partitions.get(1).getPartitionKey(), is("test.collection|4000|4999|java.lang.String|java.lang.String"));
         }
     }
 
@@ -109,14 +142,22 @@ public class MongoDBExportPartitionSupplierTest {
     public void test_buildPartitionsForCollection_error() {
         when(exportPartition.getCollection()).thenReturn("invalidDBName");
         assertThrows(IllegalArgumentException.class, () -> testSupplier.apply(exportPartition));
+        verify(exportApiInvocations).increment();
+        verify(exportPartitionQueryCount, never()).increment();
+        verify(export4xxErrors).increment();
+        verify(export5xxErrors, never()).increment();
     }
 
     @Test
     public void test_buildPartitions_dbException() {
         try (MockedStatic<MongoDBConnection> mongoDBConnectionMockedStatic = mockStatic(MongoDBConnection.class)) {
             mongoDBConnectionMockedStatic.when(() -> MongoDBConnection.getMongoClient(any(MongoDBSourceConfig.class)))
-                    .thenThrow(RuntimeException.class);
+                    .thenThrow(MongoClientException.class);
             assertThrows(RuntimeException.class, () -> testSupplier.apply(exportPartition));
+            verify(exportApiInvocations).increment();
+            verify(exportPartitionQueryCount, never()).increment();
+            verify(export4xxErrors).increment();
+            verify(export5xxErrors, never()).increment();
         }
     }
 }
